@@ -1,0 +1,136 @@
+//+------------------------------------------------------------------+
+//| Expert Advisor: Tesla & Nasdaq Strategy                          |
+//| Copyright 2025 Greaterwaves Coder for MT5                        |
+//| Website: www.greaterwaves.com                                    |
+//+------------------------------------------------------------------+
+#include <Trade/Trade.mqh>
+CTrade trade;
+
+//--- Input variables
+input double InpLotSize = 0.1;        // Tamaño de lote
+input int InpRSIPeriod = 14;         // Periodo RSI
+input int InpAMAPeriod = 20;         // Periodo AMA
+input int InpBBPeriod = 20;          // Periodo Bandas Bollinger
+input double InpBBDeviation = 2.0;   // Desviación Bandas Bollinger
+input int InpTimeframe = PERIOD_M1;  // Timeframe
+input int InpMagicNumber = 12345;    // Número mágico
+input bool InpNewsFilter = true;     // Filtro de noticias
+
+//--- Global variables
+double g_prevBarTime = 0;
+int g_amaHandle, g_rsiHandle, g_bbHandle;
+
+//+------------------------------------------------------------------+
+//| OnInit                                                          |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   // Initialize indicators
+   g_amaHandle = iMA(_Symbol, InpTimeframe, InpAMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+   g_rsiHandle = iRSI(_Symbol, InpTimeframe, InpRSIPeriod, PRICE_CLOSE);
+   g_bbHandle = iBands(_Symbol, InpTimeframe, InpBBPeriod, InpBBDeviation, 0, PRICE_CLOSE);
+
+   // Check handles
+   if (g_amaHandle < 0 || g_rsiHandle < 0 || g_bbHandle < 0)
+   {
+      Print("Error al inicializar los indicadores.");
+      return INIT_FAILED;
+   }
+
+   trade.SetExpertMagicNumber(InpMagicNumber);
+   return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| OnTick                                                          |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // Check for new bar
+   if (!IsNewBar())
+      return;
+
+   // Update indicator values
+   double ama = GetIndicatorValue(g_amaHandle, 0);
+   double rsi = GetIndicatorValue(g_rsiHandle, 0);
+   double bbLower = GetIndicatorValue(g_bbHandle, 1);
+   double bbUpper = GetIndicatorValue(g_bbHandle, 2);
+
+   // Determine trend
+   bool isUptrend = Close[1] > ama;
+   bool isDowntrend = Close[1] < ama;
+
+   // Entry logic
+   if (isUptrend && rsi > 20 && rsi < 50)
+   {
+      double volume = ValidateVolume(InpLotSize);
+      double stopLoss = bbLower;
+      double takeProfit = Close[1] + (bbUpper - bbLower);
+      trade.Buy(volume, _Symbol, stopLoss, takeProfit);
+   }
+   else if (isDowntrend && rsi > 50 && rsi < 80)
+   {
+      double volume = ValidateVolume(InpLotSize);
+      double stopLoss = bbUpper;
+      double takeProfit = Close[1] - (bbUpper - bbLower);
+      trade.Sell(volume, _Symbol, stopLoss, takeProfit);
+   }
+
+   // Exit logic
+   CheckAndClosePositions(isUptrend, isDowntrend);
+}
+
+//+------------------------------------------------------------------+
+//| Check for new bar                                               |
+//+------------------------------------------------------------------+
+bool IsNewBar()
+{
+   if (TimeCurrent() > g_prevBarTime)
+   {
+      g_prevBarTime = TimeCurrent();
+      return true;
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Validate volume                                                 |
+//+------------------------------------------------------------------+
+double ValidateVolume(double p_volume)
+{
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   return MathMax(minLot, NormalizeDouble(p_volume, lotStep));
+}
+
+//+------------------------------------------------------------------+
+//| Get Indicator Value                                             |
+//+------------------------------------------------------------------+
+double GetIndicatorValue(int handle, int buffer)
+{
+   double value[];
+   ArraySetAsSeries(value, true);
+   CopyBuffer(handle, buffer, 0, 1, value);
+   return value[0];
+}
+
+//+------------------------------------------------------------------+
+//| Check and Close Positions                                       |
+//+------------------------------------------------------------------+
+void CheckAndClosePositions(bool isUptrend, bool isDowntrend)
+{
+   for (int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if (PositionSelectByTicket(ticket))
+      {
+         if ((PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY && isDowntrend) ||
+             (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL && isUptrend))
+         {
+            trade.PositionClose(ticket);
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
